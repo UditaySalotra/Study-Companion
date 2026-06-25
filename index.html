@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="StudyApp">
+  <meta name="theme-color" content="#1B2A4A">
+  <title>Study Companion</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;background:#fff}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#333;-webkit-tap-highlight-color:transparent}
+    textarea,input,button{font-family:inherit}
+    input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+    input[type=number]{-moz-appearance:textfield}
+    @keyframes _sp{to{transform:rotate(360deg)}}
+    @keyframes _bl{0%,100%{opacity:1}50%{opacity:0.2}}
+    .blink{animation:_bl 1s ease-in-out infinite}
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-track{background:#f1f1f1}
+    ::-webkit-scrollbar-thumb{background:#ccc;border-radius:2px}
+  </style>
+</head>
+<body>
+<div id="root" style="min-height:100vh"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+<script type="text/babel">
+const {useState,useEffect,useRef}=React;
+
+/* ═══ COLORS ═══ */
+const C={navy:"#1B2A4A",orange:"#E85D04",green:"#1D9E75",red:"#C0392B"};
+
+/* ═══ API KEY MANAGEMENT ═══ */
+const SK="sc_api_key";
+const getK=()=>localStorage.getItem(SK)||"";
+const saveK=k=>localStorage.setItem(SK,k.trim());
+
+/* ═══ UTILITIES ═══ */
+const toB64=f=>new Promise((res,rej)=>{
+  const r=new FileReader();
+  r.onload=()=>res(r.result.split(",")[1]);
+  r.onerror=rej;
+  r.readAsDataURL(f);
+});
+
+const stripJ=s=>s.trim()
+  .replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/```\s*$/i,"").trim();
+
+const p2=n=>String(n).padStart(2,"0");
+const fmtT=s=>`${p2(Math.floor(s/60))}:${p2(s%60)}`;
+
+const callAI=async(msgs,maxTok=2000)=>{
+  const key=getK();
+  if(!key) throw new Error("No API key found. Go to Settings ⚙️ to add your key.");
+  const r=await fetch("https://api.anthropic.com/v1/messages",{
+    method:"POST",
+    headers:{
+      "Content-Type":"application/json",
+      "x-api-key":key,
+      "anthropic-version":"2023-06-01",
+      "anthropic-dangerous-direct-browser-access":"true"
+    },
+    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTok,messages:msgs})
+  });
+  const d=await r.json();
+  if(!r.ok) throw new Error(d.error?.message||"API error. Please check your key in Settings.");
+  const t=d.content.find(b=>b.type==="text");
+  if(!t) throw new Error("No response from AI.");
+  return t.text;
+};
+
+const mkBlk=(b64,mime)=>mime==="application/pdf"
+  ?{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
+  :{type:"image",source:{type:"base64",media_type:mime,data:b64}};
+
+/* ═══ SHARED STYLES ═══ */
+const Btn=(p=false,ex={})=>({
+  padding:p?"10px 20px":"8px 16px",borderRadius:8,fontSize:13.5,fontWeight:500,
+  cursor:"pointer",
+  border:p?`1.5px solid ${C.orange}`:"0.5px solid #ddd",
+  background:p?C.orange:"#fff",
+  color:p?"#fff":"#333",
+  transition:"opacity 0.15s",...ex
+});
+const Card={background:"#fff",border:"0.5px solid #e5e5e5",borderRadius:12,padding:"18px 22px"};
+
+/* ═══ MICRO COMPONENTS ═══ */
+function Spin({msg}){
+  return(
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",
+                 justifyContent:"center",minHeight:300,gap:16}}>
+      <div style={{width:36,height:36,borderRadius:"50%",
+                   border:`3px solid ${C.orange}`,borderTopColor:"transparent",
+                   animation:"_sp 0.8s linear infinite"}}/>
+      <div style={{fontSize:13.5,color:"#666",textAlign:"center",maxWidth:280,lineHeight:1.6}}>{msg}</div>
+    </div>
+  );
+}
+
+function ErrBox({msg}){
+  if(!msg) return null;
+  return(
+    <div style={{background:"#FCEBEB",border:"0.5px solid #F7C1C1",borderRadius:8,
+                 padding:"10px 14px",color:C.red,fontSize:13,marginBottom:14,lineHeight:1.5}}>
+      ⚠ {msg}
+    </div>
+  );
+}
+
+function Drop({id,file,onFile,label,hint}){
+  return(
+    <div onClick={()=>document.getElementById(id).click()} style={{
+      border:`2px dashed ${file?C.green:"#ddd"}`,borderRadius:10,
+      padding:"24px 20px",textAlign:"center",cursor:"pointer",
+      background:file?"#F0FBF7":"#fafafa"
+    }}>
+      <div style={{fontSize:28,color:file?C.green:"#bbb"}}>{file?"✓":"↑"}</div>
+      <div style={{marginTop:8,fontSize:13.5,fontWeight:500,color:file?C.green:"#666"}}>
+        {file?file.name:label}
+      </div>
+      <div style={{fontSize:12,color:"#aaa",marginTop:3}}>
+        {file?"Tap to change file":hint}
+      </div>
+      <input id={id} type="file" accept=".pdf,image/*" style={{display:"none"}}
+        onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}/>
+    </div>
+  );
+}
+
+function Pad({value,onChange}){
+  return(
+    <div style={{flex:1,minWidth:170}}>
+      <div style={{fontSize:10.5,fontWeight:800,textTransform:"uppercase",
+                   letterSpacing:"0.07em",color:"#aaa",marginBottom:7}}>
+        ✏ Scratchpad
+      </div>
+      <textarea value={value} onChange={e=>onChange(e.target.value)}
+        placeholder={"Rough work, pencil marks…\n\nExamples:\n1+8=9 or 2+7=9\nRow 3: must be 4\nBox sum = 17"}
+        style={{width:"100%",height:300,resize:"vertical",fontFamily:"monospace",
+                fontSize:13,padding:"10px 12px",lineHeight:1.7,
+                border:"0.5px solid #ddd",borderRadius:8,background:"#FAFAF8",color:"#333"}}/>
+      <button onClick={()=>onChange("")}
+        style={Btn(false,{fontSize:11,marginTop:5})}>Clear</button>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   SETUP SCREEN — First time only
+═══════════════════════════════════════════════════ */
+function Setup({onDone}){
+  const [key,  setKey]   = useState("");
+  const [show, setShow]  = useState(false);
+  const [err,  setErr]   = useState("");
+  const [busy, setBusy]  = useState(false);
+
+  const verify=async()=>{
+    if(!key.trim()){setErr("Please enter your API key first.");return;}
+    setBusy(true);setErr("");
+    try{
+      const r=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json",
+          "x-api-key":key.trim(),
+          "anthropic-version":"2023-06-01",
+          "anthropic-dangerous-direct-browser-access":"true"
+        },
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:5,
+                             messages:[{role:"user",content:"Hi"}]})
+      });
+      const d=await r.json();
+      if(!r.ok) throw new Error(d.error?.message||"Invalid API key.");
+      saveK(key);
+      onDone();
+    }catch(e){
+      setErr(e.message||"Could not verify. Check your internet and try again.");
+    }finally{setBusy(false);}
+  };
+
+  return(
+    <div style={{maxWidth:420,margin:"0 auto",padding:"48px 24px 32px"}}>
+      <div style={{textAlign:"center",marginBottom:36}}>
+        <div style={{fontSize:44}}>🔑</div>
+        <div style={{fontSize:22,fontWeight:800,color:C.navy,marginTop:12}}>
+          Welcome to Study Companion
+        </div>
+        <div style={{fontSize:13.5,color:"#666",marginTop:10,lineHeight:1.75}}>
+          To use this app, you need a free Anthropic API key.<br/>
+          Your key is stored <b>only on this device</b> — never shared with anyone.
+        </div>
+      </div>
+
+      <ErrBox msg={err}/>
+
+      <div style={{marginBottom:6,fontSize:12,fontWeight:700,color:"#555"}}>
+        Your Anthropic API Key
+      </div>
+      <div style={{position:"relative",marginBottom:14}}>
+        <input
+          type={show?"text":"password"} value={key}
+          onChange={e=>setKey(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&verify()}
+          placeholder="sk-ant-api03-..."
+          style={{width:"100%",padding:"11px 44px 11px 12px",fontSize:13,
+                  border:"1.5px solid #ddd",borderRadius:8,background:"#fafafa",
+                  fontFamily:"monospace",letterSpacing:"0.05em"}}
+        />
+        <button onClick={()=>setShow(s=>!s)}
+          style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
+                  background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#888"}}>
+          {show?"🙈":"👁️"}
+        </button>
+      </div>
+
+      <div style={{...Card,marginBottom:20,background:"#EEF4FF",borderColor:"#C5D8FF"}}>
+        <div style={{fontSize:13,color:"#2B4EAA",lineHeight:1.85}}>
+          <b>📌 How to get your free API key:</b><br/>
+          1. Open <b>platform.anthropic.com</b> in your browser<br/>
+          2. Click <b>Sign Up</b> → create account (free)<br/>
+          3. Go to <b>API Keys</b> section → click <b>Create Key</b><br/>
+          4. Copy the key → paste it above<br/>
+          <br/>
+          💰 <b>You get $5 free credit</b> on signup = about 3–4 months<br/>
+          &nbsp;&nbsp;&nbsp;&nbsp;of daily RC + Puzzle practice at no cost.
+        </div>
+      </div>
+
+      <button onClick={verify} disabled={!key.trim()||busy}
+        style={Btn(true,{width:"100%",padding:"13px 0",fontSize:15,
+                          opacity:key.trim()&&!busy?1:0.45})}>
+        {busy?"Verifying your key…":"Verify & Open App →"}
+      </button>
+
+      <div style={{marginTop:16,fontSize:11.5,color:"#aaa",textAlign:"center",lineHeight:1.6}}>
+        Your key is saved in this browser only.<br/>
+        It is never uploaded to GitHub or sent anywhere else.
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   SETTINGS SCREEN
+═══════════════════════════════════════════════════ */
+function Settings({onBack}){
+  const [key,  setKey]  = useState(getK());
+  const [show, setShow] = useState(false);
+  const [msg,  setMsg]  = useState("");
+
+  const save=()=>{
+    if(!key.trim()){setMsg("error:Key cannot be empty.");return;}
+    saveK(key);
+    setMsg("ok:Key saved successfully!");
+    setTimeout(()=>setMsg(""),2500);
+  };
+
+  const ok=msg.startsWith("ok:");
+  const txt=msg.slice(3);
+
+  return(
+    <div style={{maxWidth:420,margin:"0 auto",padding:"24px 20px"}}>
+      <button onClick={onBack} style={Btn()}>← Back</button>
+      <div style={{fontSize:20,fontWeight:800,color:C.navy,margin:"18px 0 4px"}}>⚙️ Settings</div>
+      <div style={{fontSize:13,color:"#888",marginBottom:22}}>Manage your Anthropic API key</div>
+
+      {msg&&(
+        <div style={{background:ok?"#EBF6E3":"#FCEBEB",border:`0.5px solid ${ok?"#B2DFA0":"#F7C1C1"}`,
+                     borderRadius:8,padding:"10px 14px",fontSize:13,marginBottom:14,
+                     color:ok?C.green:C.red}}>
+          {txt}
+        </div>
+      )}
+
+      <div style={{marginBottom:6,fontSize:12,fontWeight:700,color:"#555"}}>API Key</div>
+      <div style={{position:"relative",marginBottom:6}}>
+        <input type={show?"text":"password"} value={key}
+          onChange={e=>setKey(e.target.value)}
+          style={{width:"100%",padding:"11px 44px 11px 12px",fontSize:13,
+                  border:"1.5px solid #ddd",borderRadius:8,fontFamily:"monospace"}}/>
+        <button onClick={()=>setShow(s=>!s)}
+          style={{position:"absolute",right:10,top:"50%",transform:"translateY(-50%)",
+                  background:"none",border:"none",cursor:"pointer",fontSize:16,color:"#888"}}>
+          {show?"🙈":"👁️"}
+        </button>
+      </div>
+      <div style={{fontSize:11,color:"#aaa",marginBottom:18}}>
+        Stored in this browser only — never on GitHub or anywhere online.
+      </div>
+
+      <button onClick={save}
+        style={Btn(true,{width:"100%",padding:"12px 0",fontSize:14})}>
+        Save Key
+      </button>
+
+      <div style={{marginTop:24,padding:14,background:"#FFF8F5",borderRadius:10,
+                   border:`0.5px solid ${C.orange}25`,fontSize:12.5,color:"#555",lineHeight:1.8}}>
+        <b style={{color:C.navy,fontSize:13}}>🔒 Privacy Summary</b><br/>
+        <b>API Key:</b> On this device only<br/>
+        <b>RC passages &amp; puzzle images:</b> Sent to Anthropic for processing (same as Claude.ai)<br/>
+        <b>GitHub repo:</b> Contains only app code — no personal data, no key<br/>
+        <b>Usage cost:</b> ~₹0.35/day for 2 RCs + 4 puzzles
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   HOME SCREEN
+═══════════════════════════════════════════════════ */
+function Home({go}){
+  const [hov,setHov]=useState(null);
+  const tools=[
+    {id:"rc",    e:"📖",t:"RC Practice",
+     d:"Upload RC PDF · Set your timer · 4 CAT-style questions · Score & review"},
+    {id:"puzzle",e:"🔢",t:"Puzzle Solver",
+     d:"Sudoku & Kakuro · Interactive fillable grid · Scratchpad for rough work"},
+  ];
+  return(
+    <div style={{maxWidth:500,margin:"0 auto",padding:"40px 20px"}}>
+      <div style={{textAlign:"center",marginBottom:38}}>
+        <div style={{fontSize:28,fontWeight:800,color:C.navy,letterSpacing:-0.8}}>
+          Study Companion
+        </div>
+        <div style={{fontSize:13.5,color:"#888",marginTop:6}}>
+          Daily RC &amp; Puzzle practice — AI powered
+        </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:22}}>
+        {tools.map(({id,e,t,d})=>(
+          <div key={id} onClick={()=>go(id)}
+            onMouseEnter={()=>setHov(id)} onMouseLeave={()=>setHov(null)}
+            style={{...Card,cursor:"pointer",textAlign:"center",padding:"30px 16px",
+                    borderColor:hov===id?C.orange:"#e5e5e5",
+                    boxShadow:hov===id?`0 4px 20px rgba(232,93,4,0.12)`:"none",
+                    transition:"all 0.2s"}}>
+            <div style={{fontSize:36}}>{e}</div>
+            <div style={{fontSize:15,fontWeight:700,color:C.navy,marginTop:12}}>{t}</div>
+            <div style={{fontSize:11.5,color:"#888",marginTop:8,lineHeight:1.7}}>{d}</div>
+            <div style={{marginTop:16,fontSize:13,fontWeight:600,
+                         color:hov===id?C.orange:"#ccc"}}>
+              {hov===id?"Open →":"Tap to open"}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{textAlign:"center"}}>
+        <button onClick={()=>go("settings")}
+          style={{background:"none",border:"none",cursor:"pointer",
+                  fontSize:12.5,color:"#bbb",padding:"8px 16px"}}>
+          ⚙️ Settings / Change API Key
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   RC TOOL
+═══════════════════════════════════════════════════ */
+function RCTool({back}){
+  const [stage,  setStage]  = useState("upload");
+  const [file,   setFile]   = useState(null);
+  const [mins,   setMins]   = useState(10);
+  const [tLeft,  setTLeft]  = useState(0);
+  const [run,    setRun]    = useState(false);
+  const [timeUp, setTimeUp] = useState(false);
+  const [data,   setData]   = useState(null);
+  const [qIdx,   setQIdx]   = useState(0);
+  const [ans,    setAns]    = useState([]);
+  const [err,    setErr]    = useState("");
+  const [mob,    setMob]    = useState(window.innerWidth<500);
+  const iv=useRef(null);
+
+  useEffect(()=>{
+    const h=()=>setMob(window.innerWidth<500);
+    window.addEventListener("resize",h);
+    return()=>window.removeEventListener("resize",h);
+  },[]);
+
+  useEffect(()=>{
+    if(run){
+      iv.current=setInterval(()=>setTLeft(t=>{
+        if(t<=1){clearInterval(iv.current);setRun(false);setTimeUp(true);return 0;}
+        return t-1;
+      }),1000);
+    }
+    return()=>clearInterval(iv.current);
+  },[run]);
+
+  const process=async()=>{
+    if(!file) return;
+    setStage("loading"); setErr("");
+    try{
+      const b64=await toB64(file);
+      const raw=await callAI([{role:"user",content:[
+        mkBlk(b64,file.type),
+        {type:"text",text:`You are a CAT exam RC expert. Extract the COMPLETE reading comprehension passage and generate exactly 4 CAT-style MCQ questions.
+Return ONLY valid JSON (no markdown, no text outside JSON):
+{"passage":"Full verbatim passage text. Use \\n\\n between paragraphs.","questions":[{"q":"Question?","opts":["A: text","B: text","C: text","D: text"],"ans":0,"exp":"Why this answer is correct."}]}
+Rules: "ans"=0-3 index of correct option. Question types: main idea, inference, author tone/attitude, vocabulary in context. All 4 options must seem plausible. Questions must require reasoning, not just finding facts.`}
+      ]}],2500);
+      const p=JSON.parse(stripJ(raw));
+      if(!p.passage||!Array.isArray(p.questions)||!p.questions.length)
+        throw new Error("Could not extract the passage. Please try a clearer file.");
+      setData(p);
+      setAns(new Array(p.questions.length).fill(null));
+      setQIdx(0); setTimeUp(false);
+      setTLeft(mins*60); setRun(true);
+      setStage("practice");
+    }catch(e){
+      setErr(e.message||"Something went wrong. Please try again.");
+      setStage("upload");
+    }
+  };
+
+  const submit=()=>{clearInterval(iv.current);setRun(false);setStage("result");};
+  const reset=()=>{
+    clearInterval(iv.current);setRun(false);
+    setStage("upload");setFile(null);setData(null);setErr("");setTimeUp(false);
+  };
+
+  /* UPLOAD */
+  if(stage==="upload") return(
+    <div style={{maxWidth:450,margin:"0 auto",padding:"24px 20px"}}>
+      <button onClick={back} style={Btn()}>← Back</button>
+      <div style={{fontSize:21,fontWeight:800,color:C.navy,margin:"18px 0 4px"}}>📖 RC Practice</div>
+      <div style={{fontSize:13,color:"#888",marginBottom:20}}>
+        Upload your RC · Set timer · AI generates 4 CAT-style questions
+      </div>
+      <ErrBox msg={err}/>
+      <Drop id="rc-f" file={file} onFile={setFile}
+        label="Click to upload RC (PDF or image)"
+        hint="PDF recommended · JPG and PNG also work"/>
+      <div style={{...Card,margin:"16px 0"}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:12}}>⏱ Set Timer</div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12}}>
+          <button onClick={()=>setMins(m=>Math.max(1,m-1))}
+            style={Btn(false,{width:34,padding:0,fontSize:18,textAlign:"center"})}>−</button>
+          <input type="number" min={1} max={120} value={mins}
+            onChange={e=>setMins(Math.max(1,Math.min(120,parseInt(e.target.value)||1)))}
+            style={{width:60,textAlign:"center",fontSize:22,fontWeight:800,color:C.navy,
+                    border:"1px solid #ddd",borderRadius:8,padding:"6px 0",background:"transparent"}}/>
+          <button onClick={()=>setMins(m=>Math.min(120,m+1))}
+            style={Btn(false,{width:34,padding:0,fontSize:18,textAlign:"center"})}>+</button>
+          <span style={{fontSize:13,color:"#888"}}>minutes</span>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {[5,8,10,12,15,20].map(m=>(
+            <button key={m} onClick={()=>setMins(m)}
+              style={Btn(mins===m,{padding:"5px 11px",fontSize:12})}>{m} min</button>
+          ))}
+        </div>
+      </div>
+      <button onClick={process} disabled={!file}
+        style={Btn(true,{width:"100%",padding:"13px 0",fontSize:15,opacity:file?1:0.45})}>
+        Generate Questions &amp; Start →
+      </button>
+    </div>
+  );
+
+  if(stage==="loading") return <Spin msg="Reading your passage and generating 4 CAT-style questions…"/>;
+
+  /* PRACTICE */
+  if(stage==="practice"&&data){
+    const q=data.questions[qIdx];
+    const tclr=tLeft<60?C.red:tLeft<180?C.orange:C.navy;
+    return(
+      <div style={{display:"flex",flexDirection:"column",
+                   height:mob?"auto":660,minHeight:480,overflow:"hidden"}}>
+        {/* Topbar */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+                     padding:"9px 14px",borderBottom:"1px solid #eee",
+                     background:"#fafafa",flexShrink:0,gap:8}}>
+          <button onClick={back} style={Btn(false,{padding:"5px 10px",fontSize:12})}>← Home</button>
+          <div style={{display:"flex",gap:5}}>
+            {data.questions.map((_,i)=>(
+              <div key={i} onClick={()=>setQIdx(i)} style={{
+                width:26,height:26,borderRadius:"50%",cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                fontSize:11.5,fontWeight:800,
+                background:i===qIdx?C.navy:ans[i]!==null?C.green:"#fff",
+                color:(i===qIdx||ans[i]!==null)?"#fff":"#aaa",
+                border:`1.5px solid ${i===qIdx?C.navy:ans[i]!==null?C.green:"#ddd"}`
+              }}>{i+1}</div>
+            ))}
+          </div>
+          <div className={tLeft<60&&!timeUp?"blink":""}
+            style={{fontFamily:"monospace",fontSize:18,fontWeight:800,
+                    color:tclr,minWidth:68,textAlign:"right"}}>
+            ⏱ {timeUp?"00:00":fmtT(tLeft)}
+          </div>
+        </div>
+
+        {timeUp&&(
+          <div style={{background:"#FFF4EE",borderBottom:`2px solid ${C.orange}`,
+                       padding:"7px 14px",fontSize:12.5,color:C.orange,
+                       fontWeight:700,textAlign:"center",flexShrink:0}}>
+            ⏱ Time's up! You can still review and submit.
+          </div>
+        )}
+
+        {/* Split */}
+        <div style={{display:"flex",flexDirection:mob?"column":"row",
+                     flex:mob?"none":1,overflow:mob?"visible":"hidden"}}>
+          {/* Passage */}
+          <div style={{flex:1,
+                       borderRight:mob?"none":"1px solid #eee",
+                       borderBottom:mob?"1px solid #eee":"none",
+                       overflow:"auto",height:mob?240:"auto",padding:"14px 18px"}}>
+            <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",
+                         letterSpacing:"0.08em",color:"#bbb",marginBottom:10}}>Passage</div>
+            {data.passage.split(/\n\n+/).map((p,i)=>(
+              <p key={i} style={{fontSize:13.5,lineHeight:1.9,marginBottom:14,color:"#333"}}>{p}</p>
+            ))}
+          </div>
+
+          {/* Question */}
+          <div style={{flex:1,overflow:"auto",padding:"14px 18px",
+                       display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{fontSize:10,fontWeight:800,textTransform:"uppercase",
+                         letterSpacing:"0.08em",color:"#bbb"}}>
+              Question {qIdx+1} of {data.questions.length}
+            </div>
+            <div style={{fontSize:14.5,fontWeight:700,lineHeight:1.65,color:C.navy}}>
+              {q.q}
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {q.opts.map((opt,oi)=>{
+                const ch=ans[qIdx]===oi;
+                return(
+                  <div key={oi} onClick={()=>{
+                    if(timeUp) return;
+                    const a=[...ans]; a[qIdx]=oi; setAns(a);
+                  }} style={{
+                    display:"flex",alignItems:"flex-start",gap:10,
+                    padding:"11px 13px",borderRadius:9,
+                    cursor:timeUp?"default":"pointer",
+                    border:`1px solid ${ch?C.navy:"#eee"}`,
+                    background:ch?"#EBF3FF":"#fff",
+                    transition:"all 0.12s"
+                  }}>
+                    <div style={{
+                      width:22,height:22,borderRadius:"50%",flexShrink:0,
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:11.5,fontWeight:800,
+                      background:ch?C.navy:"transparent",
+                      color:ch?"#fff":"#aaa",
+                      border:`1.5px solid ${ch?C.navy:"#ddd"}`
+                    }}>{["A","B","C","D"][oi]}</div>
+                    <span style={{fontSize:13,lineHeight:1.6,
+                                  color:ch?C.navy:"#333",fontWeight:ch?500:400}}>
+                      {opt}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Bottombar */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                     padding:"10px 14px",borderTop:"1px solid #eee",
+                     background:"#fafafa",flexShrink:0}}>
+          <button onClick={()=>setQIdx(q=>Math.max(0,q-1))} disabled={qIdx===0}
+            style={Btn(false,{opacity:qIdx===0?0.35:1})}>← Prev</button>
+          {qIdx<data.questions.length-1
+            ?<button onClick={()=>setQIdx(q=>q+1)} style={Btn(true)}>Next →</button>
+            :<button onClick={submit}
+               style={Btn(true,{background:C.green,borderColor:C.green})}>
+               Submit &amp; Score ✓
+             </button>
+          }
+        </div>
+      </div>
+    );
+  }
+
+  /* RESULT */
+  if(stage==="result"&&data){
+    const total=data.questions.length;
+    const score=ans.filter((a,i)=>a===data.questions[i]?.ans).length;
+    const clr=score===total?C.green:score>=total*0.75?C.orange:score>=total*0.5?C.navy:C.red;
+    return(
+      <div style={{maxWidth:600,margin:"0 auto",padding:"24px 20px"}}>
+        <div style={{textAlign:"center",marginBottom:30}}>
+          <div style={{fontSize:56,fontWeight:900,color:clr,lineHeight:1}}>
+            {score}
+            <span style={{fontSize:26,fontWeight:400,color:"#aaa"}}>/{total}</span>
+          </div>
+          <div style={{fontSize:15,color:"#888",marginTop:6}}>
+            {score===total?"Perfect score! 🎉"
+             :score>=total*0.75?"Well done!"
+             :score>=total*0.5?"Good attempt!"
+             :"Keep practising!"}
+          </div>
+        </div>
+        {data.questions.map((q,i)=>{
+          const ua=ans[i],ok=ua===q.ans;
+          return(
+            <div key={i} style={{...Card,marginBottom:14,
+                                 borderLeft:`3.5px solid ${ok?C.green:C.red}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:8}}>
+                Q{i+1}: {q.q}
+              </div>
+              {q.opts.map((opt,oi)=>(
+                <div key={oi} style={{
+                  padding:"6px 10px",borderRadius:6,marginBottom:3,
+                  fontSize:12.5,display:"flex",alignItems:"center",gap:6,
+                  background:oi===q.ans?"#EBF6E3":(oi===ua&&!ok)?"#FCEBEB":"transparent",
+                  color:oi===q.ans?"#1E5C09":(oi===ua&&!ok)?C.red:"#888",
+                  fontWeight:(oi===q.ans||oi===ua)?700:400
+                }}>
+                  {oi===q.ans&&<span style={{color:C.green}}>✓</span>}
+                  {oi===ua&&oi!==q.ans&&<span style={{color:C.red}}>✗</span>}
+                  {opt}
+                </div>
+              ))}
+              <div style={{fontSize:12,marginTop:8,padding:"8px 11px",
+                           background:"#f7f7f7",borderRadius:7,
+                           color:"#666",lineHeight:1.65}}>
+                💡 {q.exp}
+              </div>
+            </div>
+          );
+        })}
+        <div style={{display:"flex",gap:10,marginTop:18}}>
+          <button onClick={reset}
+            style={Btn(true,{flex:1,padding:"12px 0",fontSize:14})}>Try Another RC</button>
+          <button onClick={back}
+            style={Btn(false,{flex:1,padding:"12px 0",fontSize:14})}>← Home</button>
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════
+   PUZZLE SOLVER
+═══════════════════════════════════════════════════ */
+function PuzzleSolver({back}){
+  const [stage,setStage]=useState("upload");
+  const [type, setType] =useState("sudoku");
+  const [file, setFile] =useState(null);
+  const [data, setData] =useState(null);
+  const [err,  setErr]  =useState("");
+
+  const process=async()=>{
+    if(!file) return;
+    setStage("loading"); setErr("");
+    try{
+      const b64=await toB64(file);
+      const prompt=type==="sudoku"
+        ?`Analyze this Sudoku puzzle image very carefully.
+Return ONLY valid JSON (no markdown, no text outside JSON):
+{"type":"sudoku","grid":[[r0c0,r0c1,r0c2,r0c3,r0c4,r0c5,r0c6,r0c7,r0c8],[r1c0,r1c1,r1c2,r1c3,r1c4,r1c5,r1c6,r1c7,r1c8],[r2c0,r2c1,r2c2,r2c3,r2c4,r2c5,r2c6,r2c7,r2c8],[r3c0,r3c1,r3c2,r3c3,r3c4,r3c5,r3c6,r3c7,r3c8],[r4c0,r4c1,r4c2,r4c3,r4c4,r4c5,r4c6,r4c7,r4c8],[r5c0,r5c1,r5c2,r5c3,r5c4,r5c5,r5c6,r5c7,r5c8],[r6c0,r6c1,r6c2,r6c3,r6c4,r6c5,r6c6,r6c7,r6c8],[r7c0,r7c1,r7c2,r7c3,r7c4,r7c5,r7c6,r7c7,r7c8],[r8c0,r8c1,r8c2,r8c3,r8c4,r8c5,r8c6,r8c7,r8c8]]}
+Exactly 9 rows x 9 columns. Use 0 for blank/empty cells and 1-9 for printed numbers.`
+        :`Analyze this Kakuro puzzle image very carefully.
+Return ONLY valid JSON (no markdown, no text outside JSON):
+{"type":"kakuro","rows":<total_rows>,"cols":<total_cols>,"cells":[
+  {"r":0,"c":0,"type":"black"},
+  {"r":0,"c":1,"type":"clue","across":null,"down":16},
+  {"r":1,"c":0,"type":"clue","across":23,"down":null},
+  {"r":1,"c":1,"type":"white"}
+]}
+Cell types: "black"=solid filled cell; "clue"=dark cell with clue numbers (across=sum for cells going RIGHT in same row, down=sum for cells going DOWN in same column, use null if no clue in that direction); "white"=empty cell the player fills in with 1-9. List every single cell.`;
+
+      const raw=await callAI([{role:"user",content:[
+        mkBlk(b64,file.type),{type:"text",text:prompt}
+      ]}],2000);
+      const p=JSON.parse(stripJ(raw));
+      if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
+      setData(p); setStage("solve");
+    }catch(e){
+      setErr(e.message||"Something went wrong. Please try a clearer image.");
+      setStage("upload");
+    }
+  };
+
+  const reset=()=>{setStage("upload");setFile(null);setData(null);setErr("");};
+
+  if(stage==="upload") return(
+    <div style={{maxWidth:440,margin:"0 auto",padding:"24px 20px"}}>
+      <button onClick={back} style={Btn()}>← Back</button>
+      <div style={{fontSize:21,fontWeight:800,color:C.navy,margin:"18px 0 4px"}}>🔢 Puzzle Solver</div>
+      <div style={{fontSize:13,color:"#888",marginBottom:20}}>
+        Upload your puzzle — AI detects the grid and makes it interactive
+      </div>
+      <ErrBox msg={err}/>
+      <div style={{...Card,marginBottom:16}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:10}}>Puzzle type</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+          {[["sudoku","🔢 Sudoku"],["kakuro","➕ Kakuro"]].map(([t,l])=>(
+            <div key={t} onClick={()=>setType(t)} style={{
+              padding:"13px 0",textAlign:"center",borderRadius:8,cursor:"pointer",
+              border:`1.5px solid ${type===t?C.orange:"#eee"}`,
+              background:type===t?"#FFF4EE":"#fff",
+              color:type===t?C.orange:"#888",
+              fontWeight:type===t?700:400,fontSize:14,transition:"all 0.15s"
+            }}>{l}</div>
+          ))}
+        </div>
+      </div>
+      <Drop id="puz-f" file={file} onFile={setFile}
+        label={`Upload ${type} image or PDF`}
+        hint="JPG · PNG · PDF — clearer image = better detection"/>
+      <button onClick={process} disabled={!file}
+        style={Btn(true,{width:"100%",padding:"13px 0",fontSize:15,
+                          marginTop:16,opacity:file?1:0.45})}>
+        Analyse Puzzle →
+      </button>
+    </div>
+  );
+
+  if(stage==="loading") return <Spin msg="Analysing your puzzle grid — this takes a few seconds…"/>;
+
+  if(stage==="solve"&&data)
+    return data.type==="sudoku"
+      ?<SudokuSolve data={data} onBack={reset}/>
+      :<KakuroSolve data={data} onBack={reset}/>;
+
+  return null;
+}
+
+/* ═══════════════════════════════════════════════════
+   SUDOKU SOLVER
+═══════════════════════════════════════════════════ */
+function SudokuSolve({data,onBack}){
+  const CS=50;
+  const initG=data.grid.map(r=>r.map(v=>v||null));
+  const [grid,   setGrid]    = useState(initG.map(r=>[...r]));
+  const [given]               = useState(initG.map(r=>[...r]));
+  const [sel,    setSel]     = useState(null);
+  const [scratch,setScratch] = useState("");
+
+  useEffect(()=>{
+    const h=e=>{
+      if(!sel) return;
+      const [r,c]=sel;
+      if(e.key>="1"&&e.key<="9"){
+        if(given[r][c]!==null) return;
+        const g=grid.map(row=>[...row]); g[r][c]=parseInt(e.key); setGrid(g);
+      }else if(e.key==="Backspace"||e.key==="Delete"){
+        if(given[r][c]!==null) return;
+        const g=grid.map(row=>[...row]); g[r][c]=null; setGrid(g);
+      }else if(e.key==="ArrowRight") setSel([r,Math.min(8,c+1)]);
+      else if(e.key==="ArrowLeft")   setSel([r,Math.max(0,c-1)]);
+      else if(e.key==="ArrowDown")   setSel([Math.min(8,r+1),c]);
+      else if(e.key==="ArrowUp")     setSel([Math.max(0,r-1),c]);
+    };
+    window.addEventListener("keydown",h);
+    return()=>window.removeEventListener("keydown",h);
+  },[sel,grid,given]);
+
+  const setCell=(r,c,v)=>{
+    if(given[r][c]!==null) return;
+    const g=grid.map(row=>[...row]); g[r][c]=v; setGrid(g);
+  };
+
+  const cf=(()=>{
+    const m=Array.from({length:9},()=>Array(9).fill(false));
+    for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+      const v=grid[r][c]; if(!v) continue;
+      for(let cc=0;cc<9;cc++) if(cc!==c&&grid[r][cc]===v) m[r][c]=true;
+      for(let rr=0;rr<9;rr++) if(rr!==r&&grid[rr][c]===v) m[r][c]=true;
+      const br=Math.floor(r/3)*3,bc=Math.floor(c/3)*3;
+      for(let rr=br;rr<br+3;rr++) for(let cc=bc;cc<bc+3;cc++)
+        if((rr!==r||cc!==c)&&grid[rr][cc]===v) m[r][c]=true;
+    }
+    return m;
+  })();
+
+  const selV=sel?grid[sel[0]][sel[1]]:null;
+  const selGiv=sel?given[sel[0]][sel[1]]!==null:false;
+  const tk=i=>i===2||i===5;
+
+  return(
+    <div style={{padding:"16px 20px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+        <button onClick={onBack} style={Btn()}>← Back</button>
+        <div style={{fontSize:17,fontWeight:800,color:C.navy}}>🔢 Sudoku</div>
+        <button onClick={()=>setGrid(initG.map(r=>[...r]))}
+          style={Btn(false,{marginLeft:"auto",fontSize:12})}>Clear All</button>
+      </div>
+
+      <div style={{display:"flex",gap:22,flexWrap:"wrap",alignItems:"flex-start"}}>
+        <div style={{overflowX:"auto"}}>
+          <div style={{display:"inline-block",border:`2.5px solid ${C.navy}`}}>
+            {Array.from({length:9},(_,r)=>(
+              <div key={r} style={{display:"flex",
+                borderBottom:r<8
+                  ?`${tk(r)?2.5:0.5}px solid ${tk(r)?C.navy:"#ccc"}`
+                  :"none"}}>
+                {Array.from({length:9},(_,c)=>{
+                  const isGiv=given[r][c]!==null, v=grid[r][c];
+                  const isSel=sel&&sel[0]===r&&sel[1]===c;
+                  const sameN=selV&&v===selV&&v!==null;
+                  const conflict=cf[r][c];
+                  const sameRC=sel&&(sel[0]===r||sel[1]===c);
+                  const sameBx=sel&&Math.floor(sel[0]/3)===Math.floor(r/3)
+                                   &&Math.floor(sel[1]/3)===Math.floor(c/3);
+                  let bg="white";
+                  if(conflict) bg="#FCEBEB";
+                  else if(isSel) bg="#C8DEFF";
+                  else if(sameN) bg="#D6EBFF";
+                  else if(sameRC||sameBx) bg="#F0F4FA";
+                  return(
+                    <div key={c} onClick={()=>setSel([r,c])} style={{
+                      width:CS,height:CS,flexShrink:0,
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:20,fontWeight:isGiv?800:400,cursor:"pointer",
+                      borderRight:c<8
+                        ?`${tk(c)?2.5:0.5}px solid ${tk(c)?C.navy:"#ccc"}`
+                        :"none",
+                      background:bg,
+                      color:conflict?C.red:isGiv?C.navy:"#1A6ED8",
+                      userSelect:"none"
+                    }}>{v||""}</div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          <div style={{display:"flex",gap:14,marginTop:8,fontSize:11,color:"#aaa"}}>
+            <span><b style={{color:C.navy}}>■</b> Given</span>
+            <span><b style={{color:"#1A6ED8"}}>■</b> Your answer</span>
+            <span><b style={{color:C.red}}>■</b> Conflict</span>
+          </div>
+
+          {sel&&!selGiv&&(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",
+                         gap:4,marginTop:12,maxWidth:CS*9}}>
+              {[1,2,3,4,5,6,7,8,9].map(n=>(
+                <button key={n} onClick={()=>setCell(sel[0],sel[1],n)}
+                  style={Btn(false,{padding:"9px 0",fontSize:16,fontWeight:800,
+                                     textAlign:"center"})}>{n}</button>
+              ))}
+              <button onClick={()=>setCell(sel[0],sel[1],null)}
+                style={Btn(false,{padding:"9px 0",fontSize:12,
+                                   color:C.red,borderColor:"#F7C1C1"})}>✕ Del</button>
+            </div>
+          )}
+          <div style={{marginTop:8,fontSize:12,color:"#aaa"}}>
+            {!sel?"Tap any cell to select, then use the number buttons or your keyboard"
+             :selGiv?"Given cell — select a blank white cell to enter a number"
+             :""}
+          </div>
+        </div>
+        <Pad value={scratch} onChange={setScratch}/>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   KAKURO SOLVER
+═══════════════════════════════════════════════════ */
+function KakuroSolve({data,onBack}){
+  const CS=54;
+  const initV=()=>{
+    const v={};
+    data.cells.filter(c=>c.type==="white").forEach(c=>{v[`${c.r}-${c.c}`]="";});
+    return v;
+  };
+  const [vals,   setVals]    = useState(initV);
+  const [sel,    setSel]     = useState(null);
+  const [scratch,setScratch] = useState("");
+
+  useEffect(()=>{
+    const h=e=>{
+      if(!sel) return;
+      if(e.key>="1"&&e.key<="9") setVals(v=>({...v,[sel]:e.key}));
+      else if(e.key==="Backspace"||e.key==="Delete") setVals(v=>({...v,[sel]:""}));
+    };
+    window.addEventListener("keydown",h);
+    return()=>window.removeEventListener("keydown",h);
+  },[sel]);
+
+  const gc=(r,c)=>data.cells.find(x=>x.r===r&&x.c===c);
+
+  return(
+    <div style={{padding:"16px 20px"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+        <button onClick={onBack} style={Btn()}>← Back</button>
+        <div style={{fontSize:17,fontWeight:800,color:C.navy}}>➕ Kakuro</div>
+        <button onClick={()=>setVals(initV())}
+          style={Btn(false,{marginLeft:"auto",fontSize:12})}>Clear All</button>
+      </div>
+
+      <div style={{display:"flex",gap:22,flexWrap:"wrap",alignItems:"flex-start"}}>
+        <div style={{overflowX:"auto"}}>
+          <div style={{display:"inline-block",border:`1.5px solid ${C.navy}`}}>
+            {Array.from({length:data.rows},(_,r)=>(
+              <div key={r} style={{display:"flex"}}>
+                {Array.from({length:data.cols},(_,c)=>{
+                  const cell=gc(r,c);
+                  if(!cell||cell.type==="black")
+                    return <div key={c} style={{width:CS,height:CS,flexShrink:0,
+                      background:C.navy,border:`0.5px solid ${C.navy}`}}/>;
+                  if(cell.type==="clue")
+                    return(
+                      <div key={c} style={{width:CS,height:CS,flexShrink:0,
+                        background:"#2C3E60",position:"relative",
+                        border:"0.5px solid #1a2840"}}>
+                        <svg width={CS} height={CS}
+                          style={{position:"absolute",inset:0,pointerEvents:"none"}}>
+                          <line x1={2} y1={2} x2={CS-2} y2={CS-2}
+                            stroke="rgba(255,255,255,0.2)" strokeWidth={1}/>
+                        </svg>
+                        {cell.across!=null&&(
+                          <span style={{position:"absolute",top:3,right:4,
+                            fontSize:11,color:"#fff",fontWeight:700,
+                            lineHeight:1,userSelect:"none"}}>{cell.across}</span>
+                        )}
+                        {cell.down!=null&&(
+                          <span style={{position:"absolute",bottom:3,left:4,
+                            fontSize:11,color:"#fff",fontWeight:700,
+                            lineHeight:1,userSelect:"none"}}>{cell.down}</span>
+                        )}
+                      </div>
+                    );
+                  const key=`${r}-${c}`,isSel=sel===key;
+                  return(
+                    <div key={c} onClick={()=>setSel(key)} style={{
+                      width:CS,height:CS,flexShrink:0,
+                      border:`0.5px solid ${isSel?C.orange:"#aaa"}`,
+                      outline:isSel?`2px solid ${C.orange}`:"none",
+                      background:isSel?"#FFF0E6":"white",
+                      display:"flex",alignItems:"center",justifyContent:"center",
+                      fontSize:22,fontWeight:700,cursor:"pointer",
+                      color:C.navy,userSelect:"none"
+                    }}>{vals[key]||""}</div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          <div style={{marginTop:8,fontSize:11,color:"#aaa",
+                       display:"flex",gap:8,alignItems:"center"}}>
+            <div style={{position:"relative",width:42,height:28,
+                         background:"#2C3E60",borderRadius:3,flexShrink:0}}>
+              <span style={{position:"absolute",top:2,right:4,
+                fontSize:9,color:"#fff",fontWeight:700}}>→ across</span>
+              <span style={{position:"absolute",bottom:2,left:4,
+                fontSize:9,color:"#fff",fontWeight:700}}>↓ down</span>
+            </div>
+            Top-right = across sum · Bottom-left = down sum
+          </div>
+
+          {sel&&(
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",
+                         gap:4,marginTop:12,maxWidth:CS*Math.min(data.cols,9)}}>
+              {[1,2,3,4,5,6,7,8,9].map(n=>(
+                <button key={n} onClick={()=>setVals(v=>({...v,[sel]:String(n)}))}
+                  style={Btn(false,{padding:"9px 0",fontSize:15,
+                                     fontWeight:800,textAlign:"center"})}>{n}</button>
+              ))}
+              <button onClick={()=>setVals(v=>({...v,[sel]:""}))}
+                style={Btn(false,{padding:"9px 0",fontSize:12,
+                                   color:C.red,borderColor:"#F7C1C1"})}>✕ Del</button>
+            </div>
+          )}
+          <div style={{marginTop:8,fontSize:12,color:"#aaa"}}>
+            {sel?"Type numbers using keyboard or tap the number buttons above"
+                :"Tap any white cell to select it"}
+          </div>
+        </div>
+        <Pad value={scratch} onChange={setScratch}/>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   APP ROOT
+═══════════════════════════════════════════════════ */
+function App(){
+  const [view,setView]=useState(getK()?"home":"setup");
+  const [hist,setHist]=useState([]);
+
+  const go=s=>{setHist(h=>[...h,view]);setView(s);};
+  const back=()=>{
+    const h=[...hist];
+    const prev=h.pop()||"home";
+    setHist(h); setView(prev);
+  };
+
+  return(
+    <div style={{fontFamily:"-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif",
+                 color:"#333",minHeight:"100vh",background:"#fff"}}>
+      {view==="setup"   &&<Setup    onDone={()=>setView("home")}/>}
+      {view==="home"    &&<Home     go={go}/>}
+      {view==="settings"&&<Settings onBack={back}/>}
+      {view==="rc"      &&<RCTool   back={back}/>}
+      {view==="puzzle"  &&<PuzzleSolver back={back}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+// Register service worker for PWA (offline app shell + home screen install)
+if("serviceWorker" in navigator){
+  window.addEventListener("load",function(){
+    navigator.serviceWorker.register("./sw.js")
+      .then(function(reg){console.log("SW registered:",reg.scope);})
+      .catch(function(err){console.log("SW failed:",err);});
+  });
+}
+</script>
+</body>
+</html>
