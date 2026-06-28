@@ -64,6 +64,27 @@ const stripJ=s=>{
   return t;
 };
 
+// Expands the compact Kakuro wire format {rows,cols,grid:[rowStrings],clues:[[r,c,across,down]]}
+// into the {rows,cols,cells:[{r,c,type,across,down}]} shape the rest of the app expects.
+const expandKakuro=p=>{
+  if(!Array.isArray(p.grid)) return p; // already in old format or malformed — leave as-is
+  const clueMap={};
+  (p.clues||[]).forEach(([r,c,a,d])=>{clueMap[`${r}-${c}`]={across:a||null,down:d||null};});
+  const cells=[];
+  p.grid.forEach((rowStr,r)=>{
+    [...rowStr].forEach((ch,c)=>{
+      if(ch==="#") cells.push({r,c,type:"black"});
+      else if(ch==="."||ch==="white") cells.push({r,c,type:"white"});
+      else if(ch==="C"||ch==="clue"){
+        const clue=clueMap[`${r}-${c}`]||{across:null,down:null};
+        cells.push({r,c,type:"clue",across:clue.across,down:clue.down});
+      }
+      // any unrecognized character is skipped rather than crashing the app
+    });
+  });
+  return {type:"kakuro",rows:p.rows,cols:p.cols,cells};
+};
+
 const p2=n=>String(n).padStart(2,"0");
 const fmtT=s=>`${p2(Math.floor(s/60))}:${p2(s%60)}`;
 
@@ -711,23 +732,35 @@ Return ONLY valid JSON (no markdown, no text outside JSON):
 {"type":"sudoku","grid":[[r0c0,r0c1,r0c2,r0c3,r0c4,r0c5,r0c6,r0c7,r0c8],[r1c0,r1c1,r1c2,r1c3,r1c4,r1c5,r1c6,r1c7,r1c8],[r2c0,r2c1,r2c2,r2c3,r2c4,r2c5,r2c6,r2c7,r2c8],[r3c0,r3c1,r3c2,r3c3,r3c4,r3c5,r3c6,r3c7,r3c8],[r4c0,r4c1,r4c2,r4c3,r4c4,r4c5,r4c6,r4c7,r4c8],[r5c0,r5c1,r5c2,r5c3,r5c4,r5c5,r5c6,r5c7,r5c8],[r6c0,r6c1,r6c2,r6c3,r6c4,r6c5,r6c6,r6c7,r6c8],[r7c0,r7c1,r7c2,r7c3,r7c4,r7c5,r7c6,r7c7,r7c8],[r8c0,r8c1,r8c2,r8c3,r8c4,r8c5,r8c6,r8c7,r8c8]]}
 Exactly 9 rows x 9 columns. Use 0 for blank/empty cells and 1-9 for printed numbers.`
         :`Analyze this Kakuro puzzle image very carefully.
-Return ONLY valid JSON (no markdown, no text outside JSON):
-{"type":"kakuro","rows":<total_rows>,"cols":<total_cols>,"cells":[
-  {"r":0,"c":0,"type":"black"},
-  {"r":0,"c":1,"type":"clue","across":null,"down":16},
-  {"r":1,"c":0,"type":"clue","across":23,"down":null},
-  {"r":1,"c":1,"type":"white"}
-]}
-Cell types: "black"=solid filled cell; "clue"=dark cell with clue numbers (across=sum for cells going RIGHT in same row, down=sum for cells going DOWN in same column, use null if no clue in that direction); "white"=empty cell the player fills in with 1-9. List every single cell.`;
+Return ONLY valid JSON (no markdown, no text outside JSON) in this COMPACT format:
+{"type":"kakuro","rows":<total_rows>,"cols":<total_cols>,
+"grid":["row0string","row1string",...],
+"clues":[[r,c,across,down],...]}
+
+"grid": one string per row, one character per cell, left to right:
+  "#" = solid black cell (no clue, no entry)
+  "." = white cell (player fills in 1-9)
+  "C" = clue cell (has across/down sum — also listed in "clues")
+"clues": ONLY for cells marked "C" in grid. Each entry is [row,col,acrossSum,downSum].
+  Use 0 (not null) if that direction has no clue. across=sum for white cells going RIGHT in same row. down=sum for white cells going DOWN in same column.
+
+Example for a small 3-row x 4-col grid (clue at top-left with a down-clue of 10 for the 2 white cells below it; a second clue cell in row 1 with an across-clue of 7 for the white cell to its right):
+{"type":"kakuro","rows":3,"cols":4,"grid":["C###",".C.#",".###"],"clues":[[0,0,0,10],[1,1,7,0]]}
+
+Be exact — every row string must have exactly <cols> characters, no spaces. List every row.`;
 
       const raw=await callAI([
         mkBlk(b64,file.type),{text:prompt}
-      ],2000,(attempt,max)=>setLoadMsg(`Gemini is busy right now — retrying (${attempt}/${max})…`));
-      const p=JSON.parse(stripJ(raw));
+      ],type==="kakuro"?8000:2000,(attempt,max)=>setLoadMsg(`Gemini is busy right now — retrying (${attempt}/${max})…`));
+      let p=JSON.parse(stripJ(raw));
       if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
+      if(p.type==="kakuro") p=expandKakuro(p);
       setData(p); setStage("solve");
     }catch(e){
-      setErr(e.message||"Something went wrong. Please try a clearer image.");
+      if(e instanceof SyntaxError)
+        setErr("The AI's response was cut off or malformed — this can happen with large/complex puzzles. Please try again.");
+      else
+        setErr(e.message||"Something went wrong. Please try a clearer image.");
       setStage("upload");
     }
   };
