@@ -58,29 +58,27 @@ const stripJ=s=>s.trim()
 const p2=n=>String(n).padStart(2,"0");
 const fmtT=s=>`${p2(Math.floor(s/60))}:${p2(s%60)}`;
 
-const callAI=async(msgs,maxTok=2000)=>{
+const GEMINI_MODEL="gemini-2.5-flash";
+
+const callAI=async(parts,maxTok=2000)=>{
   const key=getK();
   if(!key) throw new Error("No API key found. Go to Settings ⚙️ to add your key.");
-  const r=await fetch("https://api.anthropic.com/v1/messages",{
+  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,{
     method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      "x-api-key":key,
-      "anthropic-version":"2023-06-01",
-      "anthropic-dangerous-direct-browser-access":"true"
-    },
-    body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:maxTok,messages:msgs})
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      contents:[{role:"user",parts}],
+      generationConfig:{maxOutputTokens:maxTok}
+    })
   });
   const d=await r.json();
   if(!r.ok) throw new Error(d.error?.message||"API error. Please check your key in Settings.");
-  const t=d.content.find(b=>b.type==="text");
+  const t=d.candidates?.[0]?.content?.parts?.find(p=>p.text)?.text;
   if(!t) throw new Error("No response from AI.");
-  return t.text;
+  return t;
 };
 
-const mkBlk=(b64,mime)=>mime==="application/pdf"
-  ?{type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}}
-  :{type:"image",source:{type:"base64",media_type:mime,data:b64}};
+const mkBlk=(b64,mime)=>({inline_data:{mime_type:mime,data:b64}});
 
 /* ═══ SHARED STYLES ═══ */
 const Btn=(p=false,ex={})=>({
@@ -167,16 +165,13 @@ function Setup({onDone}){
     if(!key.trim()){setErr("Please enter your API key first.");return;}
     setBusy(true);setErr("");
     try{
-      const r=await fetch("https://api.anthropic.com/v1/messages",{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key.trim()}`,{
         method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key":key.trim(),
-          "anthropic-version":"2023-06-01",
-          "anthropic-dangerous-direct-browser-access":"true"
-        },
-        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:5,
-                             messages:[{role:"user",content:"Hi"}]})
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          contents:[{role:"user",parts:[{text:"Hi"}]}],
+          generationConfig:{maxOutputTokens:5}
+        })
       });
       const d=await r.json();
       if(!r.ok) throw new Error(d.error?.message||"Invalid API key.");
@@ -195,7 +190,7 @@ function Setup({onDone}){
           Welcome to Study Companion
         </div>
         <div style={{fontSize:13.5,color:"#666",marginTop:10,lineHeight:1.75}}>
-          To use this app, you need a free Anthropic API key.<br/>
+          To use this app, you need a free Google Gemini API key.<br/>
           Your key is stored <b>only on this device</b> — never shared with anyone.
         </div>
       </div>
@@ -203,14 +198,14 @@ function Setup({onDone}){
       <ErrBox msg={err}/>
 
       <div style={{marginBottom:6,fontSize:12,fontWeight:700,color:"#555"}}>
-        Your Anthropic API Key
+        Your Gemini API Key
       </div>
       <div style={{position:"relative",marginBottom:14}}>
         <input
           type={show?"text":"password"} value={key}
           onChange={e=>setKey(e.target.value)}
           onKeyDown={e=>e.key==="Enter"&&verify()}
-          placeholder="sk-ant-api03-..."
+          placeholder="AIzaSy..."
           style={{width:"100%",padding:"11px 44px 11px 12px",fontSize:13,
                   border:"1.5px solid #ddd",borderRadius:8,background:"#fafafa",
                   fontFamily:"monospace",letterSpacing:"0.05em"}}
@@ -225,13 +220,13 @@ function Setup({onDone}){
       <div style={{...Card,marginBottom:20,background:"#EEF4FF",borderColor:"#C5D8FF"}}>
         <div style={{fontSize:13,color:"#2B4EAA",lineHeight:1.85}}>
           <b>📌 How to get your free API key:</b><br/>
-          1. Open <b>platform.anthropic.com</b> in your browser<br/>
-          2. Click <b>Sign Up</b> → create account (free)<br/>
-          3. Go to <b>API Keys</b> section → click <b>Create Key</b><br/>
+          1. Open <b>aistudio.google.com/apikey</b> in your browser<br/>
+          2. Sign in with your Google account<br/>
+          3. Click <b>Create API Key</b><br/>
           4. Copy the key → paste it above<br/>
           <br/>
-          💰 <b>You get $5 free credit</b> on signup = about 3–4 months<br/>
-          &nbsp;&nbsp;&nbsp;&nbsp;of daily RC + Puzzle practice at no cost.
+          💰 <b>Gemini 2.5 Flash has a generous free tier</b> — no card needed,<br/>
+          &nbsp;&nbsp;&nbsp;&nbsp;plenty for daily RC + Puzzle practice at no cost.
         </div>
       </div>
 
@@ -271,7 +266,7 @@ function Settings({onBack}){
     <div style={{maxWidth:420,margin:"0 auto",padding:"24px 20px"}}>
       <button onClick={onBack} style={Btn()}>← Back</button>
       <div style={{fontSize:20,fontWeight:800,color:C.navy,margin:"18px 0 4px"}}>⚙️ Settings</div>
-      <div style={{fontSize:13,color:"#888",marginBottom:22}}>Manage your Anthropic API key</div>
+      <div style={{fontSize:13,color:"#888",marginBottom:22}}>Manage your Gemini API key</div>
 
       {msg&&(
         <div style={{background:ok?"#EBF6E3":"#FCEBEB",border:`0.5px solid ${ok?"#B2DFA0":"#F7C1C1"}`,
@@ -306,7 +301,7 @@ function Settings({onBack}){
                    border:`0.5px solid ${C.orange}25`,fontSize:12.5,color:"#555",lineHeight:1.8}}>
         <b style={{color:C.navy,fontSize:13}}>🔒 Privacy Summary</b><br/>
         <b>API Key:</b> On this device only<br/>
-        <b>RC passages &amp; puzzle images:</b> Sent to Anthropic for processing (same as Claude.ai)<br/>
+        <b>RC passages &amp; puzzle images:</b> Sent to Google Gemini for processing<br/>
         <b>GitHub repo:</b> Contains only app code — no personal data, no key<br/>
         <b>Usage cost:</b> ~₹0.35/day for 2 RCs + 4 puzzles
       </div>
@@ -404,13 +399,13 @@ function RCTool({back}){
     setStage("loading"); setErr("");
     try{
       const b64=await toB64(file);
-      const raw=await callAI([{role:"user",content:[
+      const raw=await callAI([
         mkBlk(b64,file.type),
-        {type:"text",text:`You are a CAT exam RC expert. Extract the COMPLETE reading comprehension passage and generate exactly 4 CAT-style MCQ questions.
+        {text:`You are a CAT exam RC expert. Extract the COMPLETE reading comprehension passage and generate exactly 4 CAT-style MCQ questions.
 Return ONLY valid JSON (no markdown, no text outside JSON):
 {"passage":"Full verbatim passage text. Use \\n\\n between paragraphs.","questions":[{"q":"Question?","opts":["A: text","B: text","C: text","D: text"],"ans":0,"exp":"Why this answer is correct."}]}
 Rules: "ans"=0-3 index of correct option. Question types: main idea, inference, author tone/attitude, vocabulary in context. All 4 options must seem plausible. Questions must require reasoning, not just finding facts.`}
-      ]}],2500);
+      ],2500);
       const p=JSON.parse(stripJ(raw));
       if(!p.passage||!Array.isArray(p.questions)||!p.questions.length)
         throw new Error("Could not extract the passage. Please try a clearer file.");
@@ -678,9 +673,9 @@ Return ONLY valid JSON (no markdown, no text outside JSON):
 ]}
 Cell types: "black"=solid filled cell; "clue"=dark cell with clue numbers (across=sum for cells going RIGHT in same row, down=sum for cells going DOWN in same column, use null if no clue in that direction); "white"=empty cell the player fills in with 1-9. List every single cell.`;
 
-      const raw=await callAI([{role:"user",content:[
-        mkBlk(b64,file.type),{type:"text",text:prompt}
-      ]}],2000);
+      const raw=await callAI([
+        mkBlk(b64,file.type),{text:prompt}
+      ],2000);
       const p=JSON.parse(stripJ(raw));
       if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
       setData(p); setStage("solve");
