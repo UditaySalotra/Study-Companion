@@ -88,56 +88,69 @@ const expandKakuro=p=>{
 const p2=n=>String(n).padStart(2,"0");
 const fmtT=s=>`${p2(Math.floor(s/60))}:${p2(s%60)}`;
 
-const GEMINI_MODEL="gemini-2.5-flash";
+const GEMINI_MODELS=["gemini-2.5-flash","gemini-2.5-flash-lite"]; // primary, then fallback (different capacity pool)
 const sleep=ms=>new Promise(res=>setTimeout(res,ms));
 
 const callAI=async(parts,maxTok=2000,onRetry=null)=>{
   const key=getK();
   if(!key) throw new Error("No API key found. Go to Settings ⚙️ to add your key.");
 
-  const MAX_RETRIES=2;
-  const DELAYS=[2000,4000]; // ms before retry 1 and retry 2
+  const RETRIES_PER_MODEL=1;       // quick retry before switching models
+  const DELAY_MS=1500;
 
-  for(let attempt=0;attempt<=MAX_RETRIES;attempt++){
-    let r,d;
-    try{
-      r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`,{
-        method:"POST",
-        headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({
-          contents:[{role:"user",parts}],
-          generationConfig:{maxOutputTokens:maxTok}
-        })
-      });
-      d=await r.json();
-    }catch(networkErr){
-      // Network-level failure (offline, DNS, etc.) — only retry if attempts remain
-      if(attempt<MAX_RETRIES){
-        if(onRetry) onRetry(attempt+1,MAX_RETRIES);
-        await sleep(DELAYS[attempt]);
-        continue;
+  let lastErr=null;
+
+  for(let m=0;m<GEMINI_MODELS.length;m++){
+    const model=GEMINI_MODELS[m];
+
+    for(let attempt=0;attempt<=RETRIES_PER_MODEL;attempt++){
+      let r,d;
+      try{
+        r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            contents:[{role:"user",parts}],
+            generationConfig:{maxOutputTokens:maxTok}
+          })
+        });
+        d=await r.json();
+      }catch(networkErr){
+        lastErr=new Error("Could not reach Gemini. Check your internet connection.");
+        if(attempt<RETRIES_PER_MODEL){
+          if(onRetry) onRetry(`Connection hiccup — retrying…`);
+          await sleep(DELAY_MS);
+          continue;
+        }
+        break; // try next model, if any
       }
-      throw new Error("Could not reach Gemini. Check your internet connection.");
-    }
 
-    const isOverloaded=r.status===503||r.status===429||
-      /overloaded|unavailable|high demand/i.test(d.error?.message||"");
+      const isOverloaded=r.status===503||r.status===429||
+        /overloaded|unavailable|high demand/i.test(d.error?.message||"");
 
-    if(!r.ok){
-      if(isOverloaded&&attempt<MAX_RETRIES){
-        if(onRetry) onRetry(attempt+1,MAX_RETRIES);
-        await sleep(DELAYS[attempt]);
-        continue;
+      if(!r.ok){
+        if(isOverloaded){
+          lastErr=new Error("Gemini is currently overloaded with requests. Please wait a minute and try again.");
+          if(attempt<RETRIES_PER_MODEL){
+            if(onRetry) onRetry(`${model} is busy — retrying…`);
+            await sleep(DELAY_MS);
+            continue;
+          }
+          if(m<GEMINI_MODELS.length-1&&onRetry) onRetry(`Switching to a backup model…`);
+          break; // try next model, if any
+        }
+        // Non-overload error (bad key, bad request, etc.) — fail immediately, no point switching models
+        throw new Error(d.error?.message||"API error. Please check your key in Settings.");
       }
-      if(isOverloaded)
-        throw new Error("Gemini is currently overloaded with requests. Please wait a minute and try again.");
-      throw new Error(d.error?.message||"API error. Please check your key in Settings.");
-    }
 
-    const t=d.candidates?.[0]?.content?.parts?.find(p=>p.text)?.text;
-    if(!t) throw new Error("No response from AI.");
-    return t;
+      const t=d.candidates?.[0]?.content?.parts?.find(p=>p.text)?.text;
+      if(!t) throw new Error("No response from AI.");
+      return t;
+    }
   }
+
+  // All models exhausted
+  throw lastErr||new Error("Gemini is currently overloaded with requests. Please wait a minute and try again.");
 };
 
 const mkBlk=(b64,mime)=>({inline_data:{mime_type:mime,data:b64}});
@@ -227,7 +240,7 @@ function Setup({onDone}){
     if(!key.trim()){setErr("Please enter your API key first.");return;}
     setBusy(true);setErr("");
     try{
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key.trim()}`,{
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODELS[0]}:generateContent?key=${key.trim()}`,{
         method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({
@@ -236,6 +249,15 @@ function Setup({onDone}){
         })
       });
       const d=await r.json();
+      const isOverloaded=r.status===503||r.status===429||
+        /overloaded|unavailable|high demand/i.test(d.error?.message||"");
+      if(!r.ok&&isOverloaded){
+        // Gemini is just busy right now — the key itself is likely fine, so let them through
+        // rather than incorrectly telling them the key is invalid.
+        saveK(key);
+        onDone();
+        return;
+      }
       if(!r.ok) throw new Error(d.error?.message||"Invalid API key.");
       saveK(key);
       onDone();
@@ -474,7 +496,7 @@ function RCTool({back}){
 Return ONLY valid JSON (no markdown, no text outside JSON):
 {"passage":"Full verbatim passage text. Use \\n\\n between paragraphs.","questions":[{"q":"Question?","opts":["A: text","B: text","C: text","D: text"],"ans":0,"exp":"Why this answer is correct."}]}
 Rules: "ans"=0-3 index of correct option. Question types: main idea, inference, author tone/attitude, vocabulary in context. All 4 options must seem plausible. Questions must require reasoning, not just finding facts.`}
-      ],2500,(attempt,max)=>setLoadMsg(`Gemini is busy right now — retrying (${attempt}/${max})…`));
+      ],2500,(msg)=>setLoadMsg(msg));
       const p=JSON.parse(stripJ(raw));
       if(!p.passage||!Array.isArray(p.questions)||!p.questions.length)
         throw new Error("Could not extract the passage. Please try a clearer file.");
@@ -754,7 +776,7 @@ Be exact — every row string must have exactly <cols> characters, no spaces. Li
 
       const raw=await callAI([
         mkBlk(b64,file.type),{text:prompt}
-      ],type==="kakuro"?8000:2000,(attempt,max)=>setLoadMsg(`Gemini is busy right now — retrying (${attempt}/${max})…`));
+      ],type==="kakuro"?8000:2000,(msg)=>setLoadMsg(msg));
       let p=JSON.parse(stripJ(raw));
       if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
       if(p.type==="kakuro") p=expandKakuro(p);
