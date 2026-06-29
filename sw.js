@@ -1,4 +1,4 @@
-const CACHE_NAME = "study-companion-v2";
+const CACHE_NAME = "cat-tools-v3";
 
 const FILES = [
   "./",
