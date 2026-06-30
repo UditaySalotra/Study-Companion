@@ -122,7 +122,7 @@ const callAI=async(parts,maxTok=2000,onRetry=null,thinkingBudget=-1,model=GEMINI
           contents:[{role:"user",parts}],
           generationConfig:{
             maxOutputTokens:maxTok,
-            thinkingLevel:budgetToLevel(thinkingBudget)
+            thinkingConfig:{thinkingLevel:budgetToLevel(thinkingBudget)}
           }
         })
       });
