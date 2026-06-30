@@ -758,23 +758,32 @@ function PuzzleSolver({back}){
 Return ONLY valid JSON (no markdown, no text outside JSON):
 {"type":"sudoku","grid":[[r0c0,r0c1,r0c2,r0c3,r0c4,r0c5,r0c6,r0c7,r0c8],[r1c0,r1c1,r1c2,r1c3,r1c4,r1c5,r1c6,r1c7,r1c8],[r2c0,r2c1,r2c2,r2c3,r2c4,r2c5,r2c6,r2c7,r2c8],[r3c0,r3c1,r3c2,r3c3,r3c4,r3c5,r3c6,r3c7,r3c8],[r4c0,r4c1,r4c2,r4c3,r4c4,r4c5,r4c6,r4c7,r4c8],[r5c0,r5c1,r5c2,r5c3,r5c4,r5c5,r5c6,r5c7,r5c8],[r6c0,r6c1,r6c2,r6c3,r6c4,r6c5,r6c6,r6c7,r6c8],[r7c0,r7c1,r7c2,r7c3,r7c4,r7c5,r7c6,r7c7,r7c8],[r8c0,r8c1,r8c2,r8c3,r8c4,r8c5,r8c6,r8c7,r8c8]]}
 Exactly 9 rows x 9 columns. Use 0 for blank/empty cells and 1-9 for printed numbers.`
-        :`Analyze this Kakuro puzzle image very carefully.
+        :`Analyze this Kakuro puzzle image with great care. Kakuro grids vary in size — they are NOT always 9x9. Some are 6x6, 8x10, 12x14, or any other rectangular size. Look at THIS specific image and count the actual rows and columns before doing anything else.
+
+CELL TYPES (exactly 3 kinds):
+- Solid black/grey cell with NO diagonal line -> "#" (no clue, not playable)
+- Dark cell WITH a diagonal line from top-left to bottom-right corner, splitting it into two triangles -> "C" (clue cell)
+- Completely blank/white cell -> "." (player fills in 1-9)
+
+HOW TO READ A CLUE CELL ("C"):
+- The diagonal line creates an upper-right triangle and a lower-left triangle.
+- A number in the UPPER-RIGHT triangle = the ACROSS sum (total of white cells continuing to the RIGHT in that row).
+- A number in the LOWER-LEFT triangle = the DOWN sum (total of white cells continuing DOWNWARD in that column).
+- A clue cell may show only one number (only across, or only down) or both — read each triangle separately, do not mix them up.
+
 Return ONLY valid JSON (no markdown, no text outside JSON) in this COMPACT format:
 {"type":"kakuro","rows":<total_rows>,"cols":<total_cols>,
 "grid":["row0string","row1string",...],
 "clues":[[r,c,across,down],...]}
 
-"grid": one string per row, one character per cell, left to right:
-  "#" = solid black cell (no clue, no entry)
-  "." = white cell (player fills in 1-9)
-  "C" = clue cell (has across/down sum — also listed in "clues")
-"clues": ONLY for cells marked "C" in grid. Each entry is [row,col,acrossSum,downSum].
-  Use 0 (not null) if that direction has no clue. across=sum for white cells going RIGHT in same row. down=sum for white cells going DOWN in same column.
+"grid": one string per row, one character per cell, left to right, using only "#", ".", "C" as defined above.
+"clues": ONLY for cells marked "C" in grid, at the SAME [row,col] position. Each entry is [row,col,acrossSum,downSum].
+  Use 0 (not null) if that direction has no clue.
 
 Example for a small 3-row x 4-col grid (clue at top-left with a down-clue of 10 for the 2 white cells below it; a second clue cell in row 1 with an across-clue of 7 for the white cell to its right):
 {"type":"kakuro","rows":3,"cols":4,"grid":["C###",".C.#",".###"],"clues":[[0,0,0,10],[1,1,7,0]]}
 
-Be exact — every row string must have exactly <cols> characters, no spaces. List every row.`;
+BEFORE finalizing, double-check: every "C" in the grid strings has exactly one matching [r,c] entry in "clues" at the same position, and every "clues" entry points to a cell that is actually "C". Be exact — every row string must have exactly <cols> characters, no spaces. List every row, however many rows this specific image actually has.`;
 
       const raw=await callAI([
         mkBlk(b64,file.type),{text:prompt}
@@ -972,17 +981,28 @@ function SudokuSolve({data,onBack}){
    KAKURO SOLVER
 ═══════════════════════════════════════════════════ */
 function KakuroSolve({data,onBack}){
-  const CS=54;
-  const initV=()=>{
+  // Cell size adapts to whichever dimension is larger — works for any rows x cols puzzle,
+  // not just 9x9. A 6x6 puzzle gets big comfortable cells; a 14x18 puzzle shrinks to fit.
+  const maxDim=Math.max(data.rows,data.cols);
+  const CS=maxDim<=8?54:maxDim<=12?44:maxDim<=16?36:maxDim<=20?30:24;
+
+  const [cells,setCells]=useState(()=>[...data.cells]);
+  const initV=cellList=>{
     const v={};
-    data.cells.filter(c=>c.type==="white").forEach(c=>{v[`${c.r}-${c.c}`]="";});
+    cellList.filter(c=>c.type==="white").forEach(c=>{v[`${c.r}-${c.c}`]="";});
     return v;
   };
-  const [vals,   setVals]    = useState(initV);
+  const [vals,   setVals]    = useState(()=>initV(data.cells));
   const [sel,    setSel]     = useState(null);
   const [scratch,setScratch] = useState("");
+  const [editMode,setEditMode]=useState(false);
+  const [editSel,setEditSel]=useState(null);
+  const [eType,setEType]=useState("black");
+  const [eAcross,setEAcross]=useState("");
+  const [eDown,setEDown]=useState("");
 
   useEffect(()=>{
+    if(editMode) return;
     const h=e=>{
       if(!sel) return;
       if(e.key>="1"&&e.key<="9") setVals(v=>({...v,[sel]:e.key}));
@@ -990,18 +1010,57 @@ function KakuroSolve({data,onBack}){
     };
     window.addEventListener("keydown",h);
     return()=>window.removeEventListener("keydown",h);
-  },[sel]);
+  },[sel,editMode]);
 
-  const gc=(r,c)=>data.cells.find(x=>x.r===r&&x.c===c);
+  const gc=(r,c)=>cells.find(x=>x.r===r&&x.c===c);
+
+  const openEdit=(r,c)=>{
+    const cell=gc(r,c)||{r,c,type:"black"};
+    setEditSel({r,c});
+    setEType(cell.type);
+    setEAcross(cell.across!=null&&cell.across!==0?String(cell.across):"");
+    setEDown(cell.down!=null&&cell.down!==0?String(cell.down):"");
+  };
+
+  const applyEdit=()=>{
+    if(!editSel) return;
+    const{r,c}=editSel;
+    const newCell={r,c,type:eType,
+      across:eType==="clue"&&eAcross?parseInt(eAcross):null,
+      down:eType==="clue"&&eDown?parseInt(eDown):null};
+    setCells(prev=>{
+      const idx=prev.findIndex(x=>x.r===r&&x.c===c);
+      const n=[...prev];
+      if(idx>=0) n[idx]=newCell; else n.push(newCell);
+      return n;
+    });
+    const key=`${r}-${c}`;
+    if(eType==="white") setVals(v=>({...v,[key]:v[key]||""}));
+    else setVals(v=>{const n={...v};delete n[key];return n;});
+    setEditSel(null);
+  };
 
   return(
     <div style={{padding:"16px 20px"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:18}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
         <button onClick={onBack} style={Btn()}>← Back</button>
         <div style={{fontSize:17,fontWeight:800,color:C.navy}}>➕ Kakuro</div>
-        <button onClick={()=>setVals(initV())}
-          style={Btn(false,{marginLeft:"auto",fontSize:12})}>Clear All</button>
+        <button onClick={()=>{setEditMode(e=>!e);setEditSel(null);setSel(null);}}
+          style={Btn(editMode,{marginLeft:"auto",fontSize:12,
+                               background:editMode?C.navy:undefined,
+                               borderColor:editMode?C.navy:undefined,
+                               color:editMode?"#fff":undefined})}>
+          {editMode?"✓ Done Fixing":"✏️ Fix Grid"}
+        </button>
+        {!editMode&&<button onClick={()=>setVals(initV(cells))} style={Btn(false,{fontSize:12})}>Clear All</button>}
       </div>
+
+      {editMode&&(
+        <div style={{background:"#FFFBEF",border:`1px solid ${C.gold}`,borderRadius:8,
+                     padding:"10px 14px",marginBottom:14,fontSize:12.5,color:"#555",lineHeight:1.6}}>
+          <b style={{color:C.navy}}>✏️ Fix Grid mode</b> — tap any cell below to correct its type or its across/down numbers if the AI misread something.
+        </div>
+      )}
 
       <div style={{display:"flex",gap:22,flexWrap:"wrap",alignItems:"flex-start"}}>
         <div style={{overflowX:"auto"}}>
@@ -1010,10 +1069,14 @@ function KakuroSolve({data,onBack}){
               <div key={r} style={{display:"flex"}}>
                 {Array.from({length:data.cols},(_,c)=>{
                   const cell=gc(r,c);
-                  if(!cell||cell.type==="black")
+                  const type=cell?.type||"black";
+                  const isEditSel=editSel&&editSel.r===r&&editSel.c===c;
+
+                  if(type==="black"&&!editMode)
                     return <div key={c} style={{width:CS,height:CS,flexShrink:0,
                       background:C.navy,border:`0.5px solid ${C.navy}`}}/>;
-                  if(cell.type==="clue")
+
+                  if(type==="clue"&&!editMode)
                     return(
                       <div key={c} style={{width:CS,height:CS,flexShrink:0,
                         background:"#2C3E60",position:"relative",
@@ -1025,62 +1088,133 @@ function KakuroSolve({data,onBack}){
                         </svg>
                         {cell.across!=null&&(
                           <span style={{position:"absolute",top:3,right:4,
-                            fontSize:11,color:"#fff",fontWeight:700,
+                            fontSize:CS<40?9:11,color:"#fff",fontWeight:700,
                             lineHeight:1,userSelect:"none"}}>{cell.across}</span>
                         )}
                         {cell.down!=null&&(
                           <span style={{position:"absolute",bottom:3,left:4,
-                            fontSize:11,color:"#fff",fontWeight:700,
+                            fontSize:CS<40?9:11,color:"#fff",fontWeight:700,
                             lineHeight:1,userSelect:"none"}}>{cell.down}</span>
                         )}
                       </div>
                     );
-                  const key=`${r}-${c}`,isSel=sel===key;
+
+                  if(type==="white"&&!editMode){
+                    const key=`${r}-${c}`,isSel=sel===key;
+                    return(
+                      <div key={c} onClick={()=>setSel(key)} style={{
+                        width:CS,height:CS,flexShrink:0,
+                        border:`0.5px solid ${isSel?C.gold:"#aaa"}`,
+                        outline:isSel?`2px solid ${C.gold}`:"none",
+                        background:isSel?"#F6EEE3":"white",
+                        display:"flex",alignItems:"center",justifyContent:"center",
+                        fontSize:CS<40?16:22,fontWeight:700,cursor:"pointer",
+                        color:C.navy,userSelect:"none"
+                      }}>{vals[key]||""}</div>
+                    );
+                  }
+
+                  // Edit mode: every cell is clickable regardless of current type
+                  let bg=C.navy,brd=`0.5px solid ${C.navy}`;
+                  if(type==="clue"){bg="#2C3E60";brd="0.5px solid #1a2840";}
+                  else if(type==="white"){bg="white";brd="0.5px solid #aaa";}
+                  if(isEditSel) brd=`2.5px solid ${C.gold}`;
+
                   return(
-                    <div key={c} onClick={()=>setSel(key)} style={{
-                      width:CS,height:CS,flexShrink:0,
-                      border:`0.5px solid ${isSel?C.gold:"#aaa"}`,
-                      outline:isSel?`2px solid ${C.gold}`:"none",
-                      background:isSel?"#F6EEE3":"white",
-                      display:"flex",alignItems:"center",justifyContent:"center",
-                      fontSize:22,fontWeight:700,cursor:"pointer",
-                      color:C.navy,userSelect:"none"
-                    }}>{vals[key]||""}</div>
+                    <div key={c} onClick={()=>openEdit(r,c)} style={{
+                      width:CS,height:CS,flexShrink:0,background:bg,border:brd,
+                      position:"relative",cursor:"pointer",
+                      display:"flex",alignItems:"center",justifyContent:"center",userSelect:"none"
+                    }}>
+                      {type==="clue"&&<>
+                        <svg width={CS} height={CS} style={{position:"absolute",inset:0,pointerEvents:"none"}}>
+                          <line x1={2} y1={2} x2={CS-2} y2={CS-2} stroke="rgba(255,255,255,0.2)" strokeWidth={1}/>
+                        </svg>
+                        {cell?.across!=null&&<span style={{position:"absolute",top:3,right:4,fontSize:CS<40?9:11,color:"#fff",fontWeight:700,lineHeight:1}}>{cell.across}</span>}
+                        {cell?.down!=null&&<span style={{position:"absolute",bottom:3,left:4,fontSize:CS<40?9:11,color:"#fff",fontWeight:700,lineHeight:1}}>{cell.down}</span>}
+                      </>}
+                      {type==="white"&&<span style={{fontSize:13,color:"#ccc"}}>○</span>}
+                    </div>
                   );
                 })}
               </div>
             ))}
           </div>
 
-          <div style={{marginTop:8,fontSize:11,color:"#aaa",
-                       display:"flex",gap:8,alignItems:"center"}}>
-            <div style={{position:"relative",width:42,height:28,
-                         background:"#2C3E60",borderRadius:3,flexShrink:0}}>
-              <span style={{position:"absolute",top:2,right:4,
-                fontSize:9,color:"#fff",fontWeight:700}}>→ across</span>
-              <span style={{position:"absolute",bottom:2,left:4,
-                fontSize:9,color:"#fff",fontWeight:700}}>↓ down</span>
-            </div>
-            Top-right = across sum · Bottom-left = down sum
-          </div>
-
-          {sel&&(
-            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",
-                         gap:4,marginTop:12,maxWidth:CS*Math.min(data.cols,9)}}>
-              {[1,2,3,4,5,6,7,8,9].map(n=>(
-                <button key={n} onClick={()=>setVals(v=>({...v,[sel]:String(n)}))}
-                  style={Btn(false,{padding:"9px 0",fontSize:15,
-                                     fontWeight:800,textAlign:"center"})}>{n}</button>
-              ))}
-              <button onClick={()=>setVals(v=>({...v,[sel]:""}))}
-                style={Btn(false,{padding:"9px 0",fontSize:12,
-                                   color:C.red,borderColor:"#F7C1C1"})}>✕ Del</button>
+          {editMode&&editSel&&(
+            <div style={{marginTop:12,padding:14,background:"#fff",
+                         border:`1.5px solid ${C.gold}`,borderRadius:10,maxWidth:CS*data.cols}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.navy,marginBottom:10}}>
+                Cell (row {editSel.r+1}, col {editSel.c+1}) — set type:
+              </div>
+              <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+                {[["black","⬛ Black"],["white","⬜ White"],["clue","🔢 Clue"]].map(([t,label])=>(
+                  <button key={t} onClick={()=>setEType(t)} style={Btn(eType===t,{
+                    padding:"6px 12px",fontSize:12,
+                    background:eType===t?C.navy:undefined,
+                    borderColor:eType===t?C.navy:undefined,
+                    color:eType===t?"#fff":undefined
+                  })}>{label}</button>
+                ))}
+              </div>
+              {eType==="clue"&&(
+                <div style={{display:"flex",gap:14,marginBottom:12,flexWrap:"wrap"}}>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:4}}>→ Across (top-right)</div>
+                    <input type="number" value={eAcross} onChange={e=>setEAcross(e.target.value)}
+                      placeholder="blank = none"
+                      style={{width:110,padding:"7px 10px",border:"1px solid #ddd",
+                              borderRadius:7,fontSize:14,textAlign:"center"}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,color:"#888",marginBottom:4}}>↓ Down (bottom-left)</div>
+                    <input type="number" value={eDown} onChange={e=>setEDown(e.target.value)}
+                      placeholder="blank = none"
+                      style={{width:110,padding:"7px 10px",border:"1px solid #ddd",
+                              borderRadius:7,fontSize:14,textAlign:"center"}}/>
+                  </div>
+                </div>
+              )}
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={applyEdit} style={Btn(true,{padding:"8px 18px",fontSize:13})}>✓ Apply</button>
+                <button onClick={()=>setEditSel(null)} style={Btn(false,{padding:"8px 18px",fontSize:13})}>Cancel</button>
+              </div>
             </div>
           )}
-          <div style={{marginTop:8,fontSize:12,color:"#aaa"}}>
-            {sel?"Type numbers using keyboard or tap the number buttons above"
-                :"Tap any white cell to select it"}
-          </div>
+
+          {!editMode&&(
+            <>
+              <div style={{marginTop:8,fontSize:11,color:"#aaa",
+                           display:"flex",gap:8,alignItems:"center"}}>
+                <div style={{position:"relative",width:42,height:28,
+                             background:"#2C3E60",borderRadius:3,flexShrink:0}}>
+                  <span style={{position:"absolute",top:2,right:4,
+                    fontSize:9,color:"#fff",fontWeight:700}}>→ across</span>
+                  <span style={{position:"absolute",bottom:2,left:4,
+                    fontSize:9,color:"#fff",fontWeight:700}}>↓ down</span>
+                </div>
+                Top-right = across sum · Bottom-left = down sum
+              </div>
+
+              {sel&&(
+                <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",
+                             gap:4,marginTop:12,maxWidth:CS*Math.min(data.cols,9)}}>
+                  {[1,2,3,4,5,6,7,8,9].map(n=>(
+                    <button key={n} onClick={()=>setVals(v=>({...v,[sel]:String(n)}))}
+                      style={Btn(false,{padding:"9px 0",fontSize:15,
+                                         fontWeight:800,textAlign:"center"})}>{n}</button>
+                  ))}
+                  <button onClick={()=>setVals(v=>({...v,[sel]:""}))}
+                    style={Btn(false,{padding:"9px 0",fontSize:12,
+                                       color:C.red,borderColor:"#F7C1C1"})}>✕ Del</button>
+                </div>
+              )}
+              <div style={{marginTop:8,fontSize:12,color:"#aaa"}}>
+                {sel?"Type numbers using keyboard or tap the number buttons above"
+                    :"Tap any white cell to select it — or tap ✏️ Fix Grid above if the puzzle looks wrong"}
+              </div>
+            </>
+          )}
         </div>
         <Pad value={scratch} onChange={setScratch}/>
       </div>
