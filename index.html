@@ -88,11 +88,20 @@ const expandKakuro=p=>{
 const p2=n=>String(n).padStart(2,"0");
 const fmtT=s=>`${p2(Math.floor(s/60))}:${p2(s%60)}`;
 
-const GEMINI_MODEL="gemini-2.5-flash"; // fast tier — used for RC + Sudoku, both straightforward extraction tasks
-const GEMINI_MODEL_STRONG="gemini-2.5-pro"; // higher-accuracy reasoning tier — used only for Kakuro, since reading
-                                             // two stacked sum-clues per cell across an irregular grid is a much
-                                             // harder spatial task than Sudoku's "one digit per uniform box"
+const GEMINI_MODEL="gemini-3.5-flash"; // Google's newest Flash-tier model (GA May 2026) — reported to outperform
+                                        // the older 3.1-pro/2.5-pro on reasoning-heavy tasks, used for everything now
+const GEMINI_MODEL_STRONG="gemini-3.5-flash"; // same model for Kakuro too — see note above; if accuracy issues
+                                               // persist, this is the constant to point at a different model again
 const sleep=ms=>new Promise(res=>setTimeout(res,ms));
+
+// Gemini 3.x models use thinking_level (a string: "low"/"medium"/"high") instead of the older
+// numeric thinkingBudget used by Gemini 2.x. This maps our existing numeric call-site values
+// onto the new string levels so call sites don't all need rewriting.
+const budgetToLevel=(budget)=>{
+  if(budget<=0) return "medium";   // Google's own recommended default — best quality for most tasks
+  if(budget<2000) return "medium"; // RC + Sudoku: medium is plenty for these more straightforward reads
+  return "high";                   // Kakuro: hardest spatial-reading task, worth the extra depth
+};
 
 const callAI=async(parts,maxTok=2000,onRetry=null,thinkingBudget=-1,model=GEMINI_MODEL)=>{
   const key=getK();
@@ -113,7 +122,7 @@ const callAI=async(parts,maxTok=2000,onRetry=null,thinkingBudget=-1,model=GEMINI
           contents:[{role:"user",parts}],
           generationConfig:{
             maxOutputTokens:maxTok,
-            thinkingConfig:{thinkingBudget}
+            thinkingLevel:budgetToLevel(thinkingBudget)
           }
         })
       });
@@ -316,7 +325,7 @@ function Setup({onDone}){
           3. Click <b>Create API Key</b><br/>
           4. Copy the key → paste it above<br/>
           <br/>
-          💰 <b>Gemini 2.5 Flash has a generous free tier</b> — no card needed,<br/>
+          💰 <b>Gemini has a generous free tier</b> — no card needed,<br/>
           &nbsp;&nbsp;&nbsp;&nbsp;plenty for daily RC + Puzzle practice at no cost.
         </div>
       </div>
@@ -501,7 +510,7 @@ function RCTool({back}){
 Return ONLY valid JSON (no markdown, no text outside JSON):
 {"passage":"Full verbatim passage text. Use \\n\\n between paragraphs.","questions":[{"q":"Question?","opts":["A: text","B: text","C: text","D: text"],"ans":0,"exp":"Why this answer is correct."}]}
 Rules: "ans"=0-3 index of correct option. Question types: main idea, inference, author tone/attitude, vocabulary in context. All 4 options must seem plausible. Questions must require reasoning, not just finding facts.`}
-      ],4096,(msg)=>setLoadMsg(msg),1024);
+      ],6000,(msg)=>setLoadMsg(msg),1024);
       const p=JSON.parse(stripJ(raw));
       if(!p.passage||!Array.isArray(p.questions)||!p.questions.length)
         throw new Error("Could not extract the passage. Please try a clearer file.");
@@ -790,7 +799,7 @@ BEFORE finalizing, double-check: every "C" in the grid strings has exactly one m
 
       const raw=await callAI([
         mkBlk(b64,file.type),{text:prompt}
-      ],type==="kakuro"?8000:3000,(msg)=>setLoadMsg(msg),type==="kakuro"?3000:1024,
+      ],type==="kakuro"?12000:4500,(msg)=>setLoadMsg(msg),type==="kakuro"?3000:1024,
         type==="kakuro"?GEMINI_MODEL_STRONG:GEMINI_MODEL);
       let p=JSON.parse(stripJ(raw));
       if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
