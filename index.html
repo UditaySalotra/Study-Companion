@@ -157,8 +157,15 @@ const callAI=async(parts,maxTok=2000,onRetry=null,thinkingBudget=-1,model=GEMINI
     const t=d.candidates?.[0]?.content?.parts?.find(p=>p.text)?.text;
     if(!t){
       const finishReason=d.candidates?.[0]?.finishReason;
-      if(finishReason==="MAX_TOKENS")
+      if(finishReason==="MAX_TOKENS"){
+        // Log actual token usage to console for debugging — not shown to the user,
+        // but visible in DevTools if this needs investigating further.
+        console.warn("Gemini hit MAX_TOKENS.",
+          "thinkingTokens:",d.usageMetadata?.thoughtsTokenCount,
+          "outputTokens:",d.usageMetadata?.candidatesTokenCount,
+          "maxOutputTokens was:",maxTok);
         throw new Error("The AI's response was cut off before finishing. Please try again — this is usually temporary.");
+      }
       throw new Error("No response from AI.");
     }
     return t;
@@ -799,7 +806,7 @@ BEFORE finalizing, double-check: every "C" in the grid strings has exactly one m
 
       const raw=await callAI([
         mkBlk(b64,file.type),{text:prompt}
-      ],type==="kakuro"?12000:4500,(msg)=>setLoadMsg(msg),type==="kakuro"?3000:1024,
+      ],type==="kakuro"?14000:4500,(msg)=>setLoadMsg(msg),type==="kakuro"?1500:1024,
         type==="kakuro"?GEMINI_MODEL_STRONG:GEMINI_MODEL);
       let p=JSON.parse(stripJ(raw));
       if(!p.type) throw new Error("Could not read the puzzle. Please try a clearer image.");
